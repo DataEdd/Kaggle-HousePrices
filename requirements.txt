@@ -1,0 +1,15 @@
+packaging==24.2
+pycairo==1.28.0
+pywatchman==2.0.0
+scipy==1.14.1
+ipykernel
+jupyter
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+lightgbm
+xgboost
+statsmodels
+islp
