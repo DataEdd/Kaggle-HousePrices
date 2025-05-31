@@ -25,10 +25,10 @@ This repository contains my work for UC Davis STA141C final project, where I app
 ### 🔹 Model Training & Evaluation
 - Compared performance of:
   - Linear Regression, Lasso, Ridge
-  - Random Forest, XGBoost
+  - Random Forest
   - PCA/PLS with linear models
 - Used 5-fold cross-validation with RMSE scoring
-- Final stacked ensemble achieved **top 8%** on Kaggle private leaderboard
+- Final stacked ensemble achieved **___** on Kaggle  leaderboard
 
 ## 🧪 Tech Stack
 - Python, Jupyter
