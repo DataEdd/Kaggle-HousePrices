@@ -6,6 +6,7 @@ from sklearn.decomposition import PCA
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import make_scorer, mean_squared_error
+import warnings 
 
 # ────────────────────────────────────────────────────────────────────────────────
 #  LowRankImputer for matrix completion
@@ -275,25 +276,13 @@ def handle_missing_values(df: pd.DataFrame, mean_maps: dict | None = None):
     df.drop(columns=['CentralAir'], inplace=True)
 
     # 31-35 ── Remaining mean-encoded categoricals ─────────────────────────────
-    for col in ['KitchenQual','Functional','PavedDrive','SaleType','SaleCondition']:
-        mean_encode(col)
+    for col in ['KitchenQual','Functional','PavedDrive','SaleType','SaleCondition']:mean_encode(col)
 
-    # 36 ── Standardize Features ─────────────────────────────────────────────────
-    std_cols = df.select_dtypes("number").columns.tolist()
-    if "SalePrice" in std_cols:
-        std_cols.remove("SalePrice")
-    if is_fit:
-        scaler = StandardScaler().fit(df[std_cols])
-        mean_maps["_scaler"] = scaler
-    else:
-        scaler = mean_maps["_scaler"]
-    df[std_cols] = scaler.transform(df[std_cols])
-
-    # 37 ── Boolean → int ───────────────────────────────────────────────────────
+    # 36 ── Boolean → int ───────────────────────────────────────────────────────
     bool_cols = df.select_dtypes(include='bool').columns
     df[bool_cols] = df[bool_cols].astype(int)
 
-    # 38 ── Matrix Completion for remaining Na ──────────────────────────────────
+    # 37 ── Matrix Completion for remaining Na ──────────────────────────────────
     numeric_cols = df.select_dtypes("number").columns.tolist()
     if "SalePrice" in numeric_cols:
         numeric_cols.remove("SalePrice")
@@ -305,14 +294,31 @@ def handle_missing_values(df: pd.DataFrame, mean_maps: dict | None = None):
             scoring=_imputer_scorer,  # custom X-only scorer
             cv=KFold(n_splits=5, shuffle=True, random_state=42),
         )
-        grid.fit(df[numeric_cols])
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=".*encountered in matmul",
+                category=RuntimeWarning,
+            )
+            grid.fit(df[numeric_cols])    
         best_imp = grid.best_estimator_
         mean_maps["_imputer"] = best_imp
+
     else:
         best_imp = mean_maps["_imputer"]
 
     df[numeric_cols] = best_imp.transform(df[numeric_cols])
 
+    # 38 ── Standardize Features ─────────────────────────────────────────────────
+    std_cols = df.select_dtypes("number").columns.tolist()
+    if "SalePrice" in std_cols:
+        std_cols.remove("SalePrice")
+    if is_fit:
+        scaler = StandardScaler().fit(df[std_cols])
+        mean_maps["_scaler"] = scaler
+    else:
+        scaler = mean_maps["_scaler"]
+    df[std_cols] = scaler.transform(df[std_cols])
 
     # ── return ────────────────────────────────────────────────────────────────
     if is_fit:
