@@ -43,7 +43,7 @@ with warnings.catch_warnings():
         param_grid=param_grid,
         scoring=scorer,
         cv=cv,
-        n_jobs=-1,
+        n_jobs=1,
         refit=True,
         verbose=2            
     ).fit(X, y)
