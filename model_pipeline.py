@@ -1,7 +1,80 @@
 # model_pipeline.py
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.decomposition import PCA
+from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import make_scorer, mean_squared_error
 
+# ────────────────────────────────────────────────────────────────────────────────
+#  LowRankImputer for matrix completion
+# ────────────────────────────────────────────────────────────────────────────────
+
+class LowRankImputer:
+    """
+    Iterative low-rank SVD imputer
+
+    Parameters
+    ----------
+    n_components : int   (rank M)
+    tol          : float (relative improvement stop)
+    max_iter     : int   (safety cap)
+    """
+
+    def __init__(self, n_components: int = 2, tol: float = 1e-7, max_iter: int = 50):
+        self.n_components = n_components
+        self.tol = tol
+        self.max_iter = max_iter
+
+    # sklearn-compatible API ----------------------------------------------------
+    def get_params(self, deep=True):
+        return {
+            "n_components": self.n_components,
+            "tol": self.tol,
+            "max_iter": self.max_iter,
+        }
+
+    def set_params(self, **params):
+        for k, v in params.items():
+            setattr(self, k, v)
+        return self
+
+    # --------------------------------------------------------------------------
+    def fit(self, X, y=None):
+        X = X.copy().to_numpy(float)
+        self.miss_mask_ = np.isnan(X)
+        # init with column means
+        col_mean = np.nanmean(X, axis=0)
+        X[self.miss_mask_] = np.take(col_mean, np.where(self.miss_mask_)[1])
+        prev = np.inf
+        for _ in range(self.max_iter):
+            U, s, Vt = np.linalg.svd(X, full_matrices=False)
+            L = U[:, : self.n_components] * s[: self.n_components]
+            X_hat = L @ Vt[: self.n_components]
+            X[self.miss_mask_] = X_hat[self.miss_mask_]
+            obj = np.nanmean((X_hat[~self.miss_mask_] - X[~self.miss_mask_]) ** 2)
+            if prev - obj < self.tol * obj:
+                break
+            prev = obj
+        self.X_completed_ = X
+        return self
+
+    def transform(self, X):
+        Xc = X.copy().to_numpy(float)
+        mask = np.isnan(Xc)
+        Xc[mask] = np.take(np.nanmean(self.X_completed_, axis=0),np.where(mask)[1])
+        return Xc
+
+    # needed so GridSearchCV can call estimator.score when no y is supplied
+    def score(self, X, y=None):
+        mask = ~np.isnan(X.to_numpy())
+        mse = np.mean(
+            (self.transform(X)[mask] - X.to_numpy()[mask]) ** 2
+        )
+        # negate because GridSearchCV maximises score
+        return -mse
+    
 # ────────────────────────────────────────────────────────────────────────────────
 # I/O helpers
 # ────────────────────────────────────────────────────────────────────────────────
@@ -15,20 +88,20 @@ def save_data(df: pd.DataFrame, path: str) -> None:
     df.to_csv(path, index=False)
 
 
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Main cleaning / encoding function
 # ────────────────────────────────────────────────────────────────────────────────
+
+def _imputer_scorer(estimator, X, y=None):
+    """Custom scorer that only needs X (unsupervised)."""
+    mask = ~np.isnan(X.to_numpy())
+    mse = mean_squared_error(X.to_numpy()[mask], estimator.transform(X)[mask])
+    return -mse
+
 def handle_missing_values(df: pd.DataFrame, mean_maps: dict | None = None):
     """
     Clean & encode the Ames Housing dataset.
-
-    Parameters
-    ----------
-    df : DataFrame
-        Raw train or test data (train includes SalePrice).
-    mean_maps : dict | None
-        • None  →  FIT mode: compute and return mean-encoding maps  
-        • dict  →  TRANSFORM mode: apply the provided maps (no SalePrice needed)
 
     Returns
     -------
@@ -205,9 +278,41 @@ def handle_missing_values(df: pd.DataFrame, mean_maps: dict | None = None):
     for col in ['KitchenQual','Functional','PavedDrive','SaleType','SaleCondition']:
         mean_encode(col)
 
-    # 36 ── Boolean → int ───────────────────────────────────────────────────────
+    # 36 ── Standardize Features ─────────────────────────────────────────────────
+    std_cols = df.select_dtypes("number").columns.tolist()
+    if "SalePrice" in std_cols:
+        std_cols.remove("SalePrice")
+    if is_fit:
+        scaler = StandardScaler().fit(df[std_cols])
+        mean_maps["_scaler"] = scaler
+    else:
+        scaler = mean_maps["_scaler"]
+    df[std_cols] = scaler.transform(df[std_cols])
+
+    # 37 ── Boolean → int ───────────────────────────────────────────────────────
     bool_cols = df.select_dtypes(include='bool').columns
     df[bool_cols] = df[bool_cols].astype(int)
+
+    # 38 ── Matrix Completion for remaining Na ──────────────────────────────────
+    numeric_cols = df.select_dtypes("number").columns.tolist()
+    if "SalePrice" in numeric_cols:
+        numeric_cols.remove("SalePrice")
+
+    if is_fit:
+        grid = GridSearchCV(
+            estimator=LowRankImputer(),
+            param_grid={"n_components": list(range(1, 8))},
+            scoring=_imputer_scorer,  # custom X-only scorer
+            cv=KFold(n_splits=5, shuffle=True, random_state=42),
+        )
+        grid.fit(df[numeric_cols])
+        best_imp = grid.best_estimator_
+        mean_maps["_imputer"] = best_imp
+    else:
+        best_imp = mean_maps["_imputer"]
+
+    df[numeric_cols] = best_imp.transform(df[numeric_cols])
+
 
     # ── return ────────────────────────────────────────────────────────────────
     if is_fit:

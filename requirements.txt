@@ -13,3 +13,4 @@ lightgbm
 xgboost
 statsmodels
 islp
+fancyimpute
