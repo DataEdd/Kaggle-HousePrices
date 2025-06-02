@@ -223,7 +223,7 @@ train_input = raw_train[['Id'] + [c for c in raw_train.columns if c not in ('Id'
 X_train_transformed, ids_train = clean_pipeline_transform(train_input, mean_maps)
 
 df_clean_train_v2 = X_train_transformed.copy()
-df_clean_train_v2.insert(0, 'Id', ids_train.values)
+df_clean_train_v2.insert(0, 'Id', ids_train.values) # type: ignore
 df_clean_train_v2['SalePrice'] = y_train.values
 
 os.makedirs('data/processed', exist_ok=True)
@@ -238,7 +238,7 @@ test_input = raw_test[['Id'] + [c for c in raw_test.columns if c != 'Id']]
 
 X_test_transformed, ids_test = clean_pipeline_transform(test_input, mean_maps)
 df_clean_test_v2 = X_test_transformed.copy()
-df_clean_test_v2.insert(0, 'Id', ids_test.values)
+df_clean_test_v2.insert(0, 'Id', ids_test.values) # type: ignore
 
 df_clean_test_v2.to_csv('data/processed/clean_test_v3.csv', index=False)
 
