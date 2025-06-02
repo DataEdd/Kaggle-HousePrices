@@ -1,6 +1,6 @@
 # 🏡 House Prices - Advanced Regression Techniques (STA141C Final Project)
 
-This repository contains my work for UC Davis STA141C final project, where I applied and compared advanced regression models on the Kaggle "House Prices: Advanced Regression Techniques" dataset. The goal was to predict housing sale prices based on 81 explanatory variables describing (almost) every aspect of residential homes in Ames, Iowa.
+This repository contains my work for UC Davis STA141C final project, where we applied and compared advanced regression models on the Kaggle "House Prices: Advanced Regression Techniques" dataset. The goal was to predict housing sale prices based on 81 explanatory variables describing (almost) every aspect of residential homes in Ames, Iowa.
 
 ## 📊 Project Overview
 

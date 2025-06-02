@@ -227,7 +227,7 @@ df_clean_train_v2.insert(0, 'Id', ids_train.values) # type: ignore
 df_clean_train_v2['SalePrice'] = y_train.values
 
 os.makedirs('data/processed', exist_ok=True)
-df_clean_train_v2.to_csv('data/processed/clean_train_v3.csv', index=False)
+df_clean_train_v2.to_csv('data/processed/clean_train.csv', index=False)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -240,6 +240,6 @@ X_test_transformed, ids_test = clean_pipeline_transform(test_input, mean_maps)
 df_clean_test_v2 = X_test_transformed.copy()
 df_clean_test_v2.insert(0, 'Id', ids_test.values) # type: ignore
 
-df_clean_test_v2.to_csv('data/processed/clean_test_v3.csv', index=False)
+df_clean_test_v2.to_csv('data/processed/clean_test.csv', index=False)
 
-print("Saved → data/processed/clean_train_v3.csv\n      → data/processed/clean_test_v3.csv")
+print("Saved → data/processed/clean_train.csv\n      → data/processed/clean_test.csv")
