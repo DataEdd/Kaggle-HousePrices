@@ -27,7 +27,7 @@ def main():
     # Separate features (X_train) and log‐target (y_train_log)
     ids_train = df_train["Id"].values
     y_train = df_train["SalePrice"].values
-    y_train_log = np.log(y_train)
+    y_train_log = np.log(y_train) # type: ignore
 
     X_train = df_train.drop(columns=["Id", "SalePrice"])
     n_samples, n_features = X_train.shape

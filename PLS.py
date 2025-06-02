@@ -1,36 +1,15 @@
-#!/usr/bin/env python3
-"""
-PLS.py
-
-This script performs Partial Least Squares (PLS) regression on the cleaned Ames Housing dataset
-(`clean_train_v2.csv`), using log-transformed SalePrice as the target. It performs an extensive
-grid search over the number of PLS components (from 1 up to the total number of features) with
-5-fold CV to find the optimal number of components, generates a collection of diagnostic plots
-(saved under data/figs with a “pls_” prefix), then refits on the full training set with the
-best number of components, and finally predicts on `clean_test_v2.csv`. The submission CSV
-(`pls_submission_v2.csv`) is written under data/submissions/ and contains only “Id” and “SalePrice”.
-
-Assumptions:
-- The training file is at: data/processed/clean_train_v2.csv
-  (contains columns: “Id”, all cleaned features, and “SalePrice”).
-- The test-features file is at: data/processed/clean_test_v2.csv
-  (contains columns: “Id” and exactly the same feature set as clean_train_v2.csv.drop("SalePrice")).
-- The test-ID file is at: data/processed/id_test.csv
-  (contains exactly one column “Id” with the same number of rows as clean_test_v2.csv).
-- All features in clean_train_v2.csv and clean_test_v2.csv are already encoded and standardized
-  appropriately (no further scaling needed in PLSRegression).
-- There are no missing values in either file.
-"""
-
 import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, make_scorer
+
+def neg_rmse(y_true, y_pred):
+    """Negative RMSE for log‐target (so that higher is better)."""
+    return -np.sqrt(mean_squared_error(y_true, y_pred))
 
 def make_dirs_if_needed(path: str):
     """Helper to create a directory if it doesn't exist."""
@@ -82,15 +61,14 @@ def main():
         raise FileNotFoundError(f"Could not find training file at: {train_path}")
 
     df_train = pd.read_csv(train_path)
-    df_train = df_train.fillna(0)  # Fill any NaNs with 0 (assumed no missing values)
-    df_train = df_train.fillna(0)  # Fill any NaNs with 0 (assumed no missing values)
+    df_train = df_train.fillna(0)  # Fill any NaNs with 0 (assumed no missing values-sanity check)
     if 'SalePrice' not in df_train.columns:
         raise KeyError(f"'SalePrice' column not found in {train_path}")
 
     # Separate features (X_train) and log-target (y_train_log)
     X_train_df = df_train.drop(columns=['SalePrice'])
     y_train = df_train['SalePrice'].values
-    y_train_log = np.log(y_train)
+    y_train_log = np.log(y_train) # type: ignore
 
     # Convert to numpy arrays (X_train is assumed already standardized)
     X_train = X_train_df.drop(columns=['Id']).values
@@ -105,13 +83,15 @@ def main():
     pls = PLSRegression(scale=False)
     pipe = Pipeline([('pls', pls)])
 
+    scorer = make_scorer(neg_rmse, greater_is_better=True)
+
     param_grid = {'pls__n_components': list(range(1, n_features + 1))}
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
     grid = GridSearchCV(
         estimator=pipe,
         param_grid=param_grid,
-        scoring='neg_mean_squared_error',
+        scoring=scorer,
         cv=kf,
         n_jobs=-1,
         verbose=2,
@@ -227,7 +207,7 @@ def main():
     plt.figure(figsize=(5, 4))
     plt.bar(
         ["Squared Bias", "Variance", "Train MSE"],
-        [bias2_log, var_log, mse_log],
+        [bias2_log, var_log, mse_log], # type: ignore
         color=['black', 'green', 'purple']
     )
     plt.title(f"PLS (m={best_n_comp})\nBias² / Variance / Train MSE (log)", fontsize=12)
