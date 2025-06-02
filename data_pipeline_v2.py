@@ -104,10 +104,10 @@ def fit_pipeline_for_maps(df: pd.DataFrame) -> dict:
     mean_maps["vt_selector"] = selector
 
     df_reduced = pd.DataFrame(
-        selector.transform(df.values),
+        selector.transform(df.values), # type: ignore
         columns=[col for i, col in enumerate(df.columns) if selector.get_support()[i]],
         index=df.index
-    )
+    ) # type: ignore
 
     # 10) Standardize all numeric columns (if any remain)
     final_numeric_cols = df_reduced.select_dtypes(include=["int64", "float64"]).columns.tolist()
