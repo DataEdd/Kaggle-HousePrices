@@ -2,6 +2,7 @@
 
 import pandas as pd
 import numpy as np
+
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -44,60 +45,61 @@ numeric_non_time     = [c for c in numeric_cols     if c not in time_cols]
 categorical_non_time = [c for c in categorical_cols if c not in time_cols]
 
 # -----------------------------------------------------------------------------
-# 3. Determine which non-time columns to drop due to >50% missing (based on TRAIN only)
+# 3. Determine which non-time columns to drop due to >50% missing (train only)
 # -----------------------------------------------------------------------------
 def drop_sparse_columns(df, threshold=0.50):
     miss_frac = df.isna().mean()
-    to_drop = miss_frac[miss_frac > threshold].index.tolist()
-    return to_drop
+    return miss_frac[miss_frac > threshold].index.tolist()
 
-# Compute columns to drop (train only)
 to_drop_non_time = drop_sparse_columns(
     X_train_full[numeric_non_time + categorical_non_time],
     threshold=0.50
 )
 
-# Apply the same drop to both train & test
+# Apply identical drop to both train & test
 X_train = X_train_full.drop(columns=to_drop_non_time)
 X_test  = X_test_full.drop(columns=to_drop_non_time)
 
-# Recompute non-time lists after dropping
+# Update non-time lists after dropping
 numeric_non_time     = [c for c in numeric_non_time     if c not in to_drop_non_time]
 categorical_non_time = [c for c in categorical_non_time if c not in to_drop_non_time]
 
 # -----------------------------------------------------------------------------
 # 4. Define custom transformers for non-time features
 # -----------------------------------------------------------------------------
-def winsorize_numeric(X_df):
+def winsorize_numeric(df_num):
     """
     Clip each numeric column at [0.5%, 99.5%] quantiles.
     """
-    Xw = pd.DataFrame(X_df).copy()
-    for col in Xw.columns:
-        lo, hi = Xw[col].quantile([0.005, 0.995])
-        Xw[col] = Xw[col].clip(lower=lo, upper=hi)
-    return Xw
+    dfw = pd.DataFrame(df_num).copy()
+    for col in dfw.columns:
+        lo, hi = dfw[col].quantile([0.005, 0.995])
+        dfw[col] = dfw[col].clip(lower=lo, upper=hi)
+    return dfw
 
-def log1p_all(X_df):
-    """
-    Apply np.log1p to all passed columns (assuming non-negative).
-    """
-    return np.log1p(pd.DataFrame(X_df).clip(lower=0))
+winsorize_transformer = FunctionTransformer(winsorize_numeric, validate=False)
 
-def rare_group_cat(X_df, threshold=30):
+def log1p_all(df_num):
     """
-    Any categorical level with fewer than threshold rows is replaced with "__OTHER__".
+    Apply np.log1p to every numeric column (clipping negatives to 0 first).
     """
-    Xr = pd.DataFrame(X_df).copy()
+    dfn = pd.DataFrame(df_num).clip(lower=0).copy()
+    return np.log1p(dfn)
+
+log1p_transformer = FunctionTransformer(log1p_all, validate=False)
+
+def rare_group_cat(df_cat, threshold=30):
+    """
+    Any categorical level with < threshold rows → "__OTHER__".
+    """
+    Xr = pd.DataFrame(df_cat).copy()
     for col in Xr.columns:
         freqs = Xr[col].value_counts(dropna=False)
-        rare_labels = freqs[freqs < threshold].index
-        Xr[col] = Xr[col].where(~Xr[col].isin(rare_labels), other="__OTHER__")
+        rare_vals = freqs[freqs < threshold].index
+        Xr[col] = Xr[col].where(~Xr[col].isin(rare_vals), other="__OTHER__")
     return Xr
 
-winsorize_transformer  = FunctionTransformer(winsorize_numeric)
-log1p_transformer      = FunctionTransformer(log1p_all)
-rare_group_transformer = FunctionTransformer(rare_group_cat)
+rare_group_transformer = FunctionTransformer(rare_group_cat, validate=False)
 
 # -----------------------------------------------------------------------------
 # 5. "Best-cat" list (17 columns)
@@ -109,52 +111,43 @@ ONEHOT_CAT_COLS = [
     'MiscFeature'
 ]
 
-def select_best_cols(X_df):
+def select_best_cols(df):
     """
-    Return all categories from ONEHOT_CAT_COLS that remain in X_df.
+    Return the subset of ONEHOT_CAT_COLS present in df.columns.
     """
-    return [c for c in ONEHOT_CAT_COLS if c in X_df.columns]
+    return [c for c in ONEHOT_CAT_COLS if c in df.columns]
 
 # -----------------------------------------------------------------------------
-# 6. Build a pipeline for non-time features using the recommended PLS flags:
-#    - use_winsor = True
-#    - use_log1p = True
-#    - skip var_thresh
-#    - use_rare_group = True
-#    - drop_sparse_flag (already applied above)
-#    - use_best_cat = True
+# 6. Build a ColumnTransformer for non-time features (no scaling inside)
+#    Numeric pipeline: impute → winsorize → log1p
+#    Categorical pipeline: impute "__MISSING__" → rare-group → one-hot (BEST_CAT_LIST)
 # -----------------------------------------------------------------------------
-def build_preprocessor(numeric_cols, categorical_cols):
-    # (A) Numeric sub-pipeline: impute -> winsorize -> log1p -> scale
-    num_steps = [
+def build_non_time_preprocessor(numeric_cols, categorical_cols):
+    num_pipeline = Pipeline([
         ("impute_num", SimpleImputer(strategy="median", add_indicator=True)),
         ("winsorize", winsorize_transformer),
-        ("log1p", log1p_transformer),
-        ("scale_num", StandardScaler())
-    ]
-    num_pipe = Pipeline(num_steps)
+        ("log1p", log1p_transformer)
+        # no StandardScaler here
+    ])
 
-    # (B) Categorical sub-pipeline: impute -> rare_group -> onehot(best-cat)
-    cat_pipe = Pipeline([
+    cat_pipeline = Pipeline([
         ("impute_cat", SimpleImputer(strategy="constant", fill_value="__MISSING__")),
         ("rare_group", rare_group_transformer),
-        ("onehot_best", OneHotEncoder(drop="first", handle_unknown="ignore", sparse_output=False))
+        ("onehot_best", OneHotEncoder(
+            drop="first",
+            handle_unknown="ignore",
+            sparse_output=False
+        ))
     ])
-    cat_features = select_best_cols
 
     coltrans = ColumnTransformer([
-        ("num", num_pipe, numeric_cols),
-        ("cat", cat_pipe, cat_features),
+        ("num", num_pipeline, numeric_cols),
+        ("cat", cat_pipeline, select_best_cols)
     ], remainder="drop")
 
-    # Wrap only the ColumnTransformer in a pipeline to name it "preproc_nt"
-    return Pipeline([
-        ("preproc_nt", coltrans)
-    ])
+    return coltrans
 
-# Instantiate the pipeline
-non_time_preproc = build_preprocessor(numeric_non_time, categorical_non_time)
-# Fit on training non-time columns
+non_time_preproc = build_non_time_preprocessor(numeric_non_time, categorical_non_time)
 non_time_preproc.fit(X_train[numeric_non_time + categorical_non_time])
 
 # -----------------------------------------------------------------------------
@@ -163,12 +156,39 @@ non_time_preproc.fit(X_train[numeric_non_time + categorical_non_time])
 X_nt_train = non_time_preproc.transform(X_train[numeric_non_time + categorical_non_time])
 X_nt_test  = non_time_preproc.transform(X_test[numeric_non_time + categorical_non_time])
 
-# Instead of deriving exact original names, use generic names for non-time dims
-n_non_time_feats = X_nt_train.shape[1]
-generic_non_time_names = [f"NT_{i}" for i in range(n_non_time_feats)]
+# -----------------------------------------------------------------------------
+# Helper: Extract original feature names from non-time preprocessor
+# -----------------------------------------------------------------------------
+def get_non_time_feature_names(preproc, numeric_cols, categorical_cols):
+    """
+    Returns a list of original feature names corresponding to the output columns
+    of the non-time ColumnTransformer (imputed+indicator numeric + one-hot dummies).
+    """
+    feature_names = []
+
+    # Numeric side:
+    num_imputer = preproc.named_transformers_['num'].named_steps['impute_num']
+    imp_out = num_imputer.get_feature_names_out(numeric_cols).tolist()
+    # ['LotFrontage', 'LotArea', ..., 'LotFrontage_missing', 'LotArea_missing', ...]
+    feature_names += imp_out
+
+    # Categorical side:
+    ohe = preproc.named_transformers_['cat'].named_steps['onehot_best']
+    best_present = select_best_cols(X_train[categorical_non_time])
+    ohe_out = ohe.get_feature_names_out(best_present).tolist()
+    # e.g. ['MSZoning_FV', 'MSZoning_RH', ..., 'Alley__MISSING__', ...]
+    feature_names += ohe_out
+
+    return feature_names
+
+non_time_feature_names = get_non_time_feature_names(
+    non_time_preproc,
+    numeric_non_time,
+    categorical_non_time
+)
 
 # -----------------------------------------------------------------------------
-# 8. Engineer & scale time features for train & test
+# 8. Engineer time features (no scaling yet)
 # -----------------------------------------------------------------------------
 def process_time_features(df_time):
     df_time_eng = pd.DataFrame(index=df_time.index)
@@ -181,43 +201,57 @@ def process_time_features(df_time):
     df_time_eng['SaleYear']         = df_time['YrSold']
     return df_time_eng
 
-# Train time features
 df_time_train = X_train[time_cols]
-time_eng_train = process_time_features(df_time_train).values
-time_eng_train[np.isnan(time_eng_train)] = 0.0
-time_scaler = StandardScaler().fit(time_eng_train)
-X_time_train_scaled = time_scaler.transform(time_eng_train)
+time_feats_train = process_time_features(df_time_train).values
+time_feats_train[np.isnan(time_feats_train)] = 0.0
 
-# Test time features
 df_time_test = X_test[time_cols]
-time_eng_test = process_time_features(df_time_test).values
-time_eng_test[np.isnan(time_eng_test)] = 0.0
-X_time_test_scaled = time_scaler.transform(time_eng_test)
+time_feats_test = process_time_features(df_time_test).values
+time_feats_test[np.isnan(time_feats_test)] = 0.0
 
 time_feature_names = [
-    "AgeAtSale", "YearsSinceRemodel", "GarageAge",
-    "GarageMissing", "MoSin", "MoCos", "SaleYear"
+    'AgeAtSale', 'YearsSinceRemodel', 'GarageAge',
+    'GarageMissing', 'MoSin', 'MoCos', 'SaleYear'
 ]
 
 # -----------------------------------------------------------------------------
-# 9. Concatenate non-time + time arrays into DataFrames
+# 9. Concatenate non-time + time into a single unscaled feature matrix
 # -----------------------------------------------------------------------------
-X_train_full = np.hstack([X_nt_train, X_time_train_scaled])
-X_test_full  = np.hstack([X_nt_test,  X_time_test_scaled])
+X_train_unscaled = np.hstack([X_nt_train, time_feats_train])  # type: ignore
+X_test_unscaled  = np.hstack([X_nt_test,  time_feats_test])   # type: ignore
 
-# Build DataFrames with column names
-train_cols = generic_non_time_names + time_feature_names
-df_clean_train = pd.DataFrame(X_train_full, columns=train_cols, index=X_train.index)
-df_clean_test  = pd.DataFrame(X_test_full,  columns=train_cols, index=X_test.index)
+all_feature_names = non_time_feature_names + time_feature_names
 
-# Add target back to cleaned train DataFrame
+# -----------------------------------------------------------------------------
+# 10. Fit a SINGLE StandardScaler on the ENTIRE TRAIN matrix (all features)
+# -----------------------------------------------------------------------------
+full_scaler = StandardScaler().fit(X_train_unscaled)
+X_train_scaled = full_scaler.transform(X_train_unscaled)
+X_test_scaled  = full_scaler.transform(X_test_unscaled)
+
+# -----------------------------------------------------------------------------
+# 11. Build DataFrames and save cleaned CSVs with original feature names
+# -----------------------------------------------------------------------------
+df_clean_train = pd.DataFrame(
+    X_train_scaled,
+    columns=all_feature_names,
+    index=X_train.index
+)
 df_clean_train["SalePrice"] = y.values
 
-# -----------------------------------------------------------------------------
-# 10. Save cleaned CSVs
-# -----------------------------------------------------------------------------
+df_clean_test = pd.DataFrame(
+    X_test_scaled,
+    columns=all_feature_names,
+    index=X_test.index
+)
+
 df_clean_train.to_csv("data/processed/PLS_clean_train_final.csv", index=False)
-df_clean_test.to_csv("data/processed/PLS_clean_test_final.csv",   index=False)
+df_clean_test.to_csv("data/processed/PLS_clean_test_final.csv",  index=False)
 test_ids.to_csv("data/processed/PLS_test_id.csv", index=False)
 
-print("Finished. Wrote PLS_clean_train_final.csv, PLS_clean_test_final.csv and PLS_test_id.csv to data/processed/")
+print(
+    "Finished. Wrote:\n"
+    "  • data/processed/PLS_clean_train_final.csv\n"
+    "  • data/processed/PLS_clean_test_final.csv\n"
+    "  • data/processed/PLS_test_id.csv"
+)
