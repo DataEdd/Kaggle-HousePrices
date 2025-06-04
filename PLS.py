@@ -2,14 +2,17 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.model_selection import GridSearchCV, KFold, cross_val_score
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.pipeline import Pipeline
+import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, make_scorer
+from sklearn.model_selection import cross_val_predict
+from scipy import stats
 
-def neg_rmse(y_true, y_pred):
-    """Negative RMSE for log‐target (so that higher is better)."""
-    return -np.sqrt(mean_squared_error(y_true, y_pred))
+#def neg_rmse(y_true, y_pred):
+#    """Negative RMSE for log‐target (so that higher is better)."""
+#    return -np.sqrt(mean_squared_error(y_true, y_pred))
 
 def make_dirs_if_needed(path: str):
     """Helper to create a directory if it doesn't exist."""
@@ -25,7 +28,7 @@ def compute_coef_path(X_std: np.ndarray, y_log: np.ndarray, m_max: int):
     n, p = X_std.shape
     coef_mat = np.zeros((m_max, p))
     for k in range(1, m_max + 1):
-        pls_k = PLSRegression(n_components=k, scale=False)
+        pls_k = PLSRegression(n_components=k, scale=True)
         pls_k.fit(X_std, y_log)
         coef_mat[k - 1, :] = pls_k.coef_.ravel()
     return coef_mat
@@ -36,7 +39,7 @@ def compute_response_variance(X_std: np.ndarray, y_log: np.ndarray, m_max: int):
       - per_component_frac[i] = fraction of Var(y) explained by the i-th PLS component
       - cum_explained[k] = cumulative fraction of Var(y) explained up to component k
     """
-    pls_full = PLSRegression(n_components=m_max, scale=False)
+    pls_full = PLSRegression(n_components=m_max, scale=True)
     pls_full.fit(X_std, y_log)
     T = pls_full.x_scores_           # shape (n, m_max)
     Q = pls_full.y_loadings_.ravel() # shape (m_max,)
@@ -52,252 +55,165 @@ def compute_response_variance(X_std: np.ndarray, y_log: np.ndarray, m_max: int):
 
     return per_component_frac, cum_explained
 
-def main():
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 1) LOAD AND PREPARE TRAINING DATA
-    # ─────────────────────────────────────────────────────────────────────────────
-    train_path = os.path.join('data', 'processed', 'clean_train.csv')
+def main() -> None:
+    # 1) ─── Load cleaned training matrix ───────────────────────────────────────
+    train_path = os.path.join("data", "processed", "PLS_clean_train.csv")
     if not os.path.isfile(train_path):
         raise FileNotFoundError(f"Could not find training file at: {train_path}")
 
-    df_train = pd.read_csv(train_path)
-    df_train = df_train.fillna(0)  # Fill any NaNs with 0 (assumed no missing values-sanity check)
-    if 'SalePrice' not in df_train.columns:
-        raise KeyError(f"'SalePrice' column not found in {train_path}")
+    df_train = pd.read_csv(train_path).fillna(0)
+    if "SalePrice" not in df_train.columns:
+        raise KeyError("'SalePrice' column missing from training set")
 
-    # Separate features (X_train) and log-target (y_train_log)
-    X_train_df = df_train.drop(columns=['SalePrice'])
-    y_train = df_train['SalePrice'].values
-    y_train_log = np.log(y_train) # type: ignore
+    X_train_df = df_train.drop(columns=["SalePrice"])
+    y_train_log = np.log1p(df_train["SalePrice"].values) # type: ignore
+    n_samples, n_features = X_train_df.shape
 
-    # Convert to numpy arrays (X_train is assumed already standardized)
-    X_train = X_train_df.drop(columns=['Id']).values
-    n_samples, n_features = X_train.shape
+    print(f"[INFO] Loaded training matrix: {n_samples}×{n_features}")
 
-    print(f"[INFO] Loaded training data: {n_samples} rows, {n_features} features.")
-    print(f"[INFO] Target will be log-transformed, shape: {y_train_log.shape}.\n")
-
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 2) SET UP PIPELINE AND GRID SEARCH FOR OPTIMAL N_COMPONENTS
-    # ─────────────────────────────────────────────────────────────────────────────
-    pls = PLSRegression(scale=False)
-    pipe = Pipeline([('pls', pls)])
-
-    scorer = make_scorer(neg_rmse, greater_is_better=True)
-
-    param_grid = {'pls__n_components': list(range(1, n_features + 1))}
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    # 2) ─── Grid‑search for optimal # of PLS components ────────────────────────
+    pipe = Pipeline([("pls", PLSRegression(scale=True))])
+    param_grid = {"pls__n_components": list(range(1, n_features + 1))}
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
 
     grid = GridSearchCV(
-        estimator=pipe,
+        pipe,
         param_grid=param_grid,
-        scoring=scorer,
-        cv=kf,
+        scoring="neg_root_mean_squared_error", 
+        cv=cv,
         n_jobs=-1,
         verbose=2,
-        return_train_score=True
+        return_train_score=True,
     )
 
-    print(f"[INFO] Starting GridSearchCV over n_components=1..{n_features} (5-fold CV).")
-    grid.fit(X_train, y_train_log)
+    print(f"[INFO] Starting GridSearchCV over 1…{n_features} components (5‑fold).")
+    grid.fit(X_train_df, y_train_log)
     print("[INFO] GridSearchCV complete.\n")
 
-    # Extract best number of components
-    best_n_comp = grid.best_params_['pls__n_components']
-    best_neg_mse = grid.best_score_
-    best_rmse_log = np.sqrt(-best_neg_mse)
-    print(f"[RESULT] Best n_components: {best_n_comp}")
-    print(f"[RESULT] CV RMSE (log-target) at best n_components: {best_rmse_log:.6f}\n")
+    best_k   = grid.best_params_["pls__n_components"]
+    best_rmse = -grid.best_score_
+    print(f"[RESULT] Best n_components: {best_k}")
+    print(f"[RESULT] CV RMSE (log target): {best_rmse:.6f}\n")
 
-    cv_results = grid.cv_results_
+    # 3) ─── Fit final PLS on full training data ────────────────────────────────
+    final_pls = PLSRegression(n_components=best_k, scale=True)
+    final_pls.fit(X_train_df, y_train_log)
+    print(f"[INFO] Final PLS model (k={best_k}) fitted on full training set.\n")
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 3) PREPARE DIRECTORIES FOR PLOTTING
-    # ─────────────────────────────────────────────────────────────────────────────
-    figs_dir = os.path.join('data', 'figs')
+    # 4) ─── Predict on cleaned test matrix ─────────────────────────────────────
+    test_feats_path = os.path.join("data", "processed", "PLS_clean_test.csv")
+    if not os.path.isfile(test_feats_path):
+        raise FileNotFoundError(f"Could not find test features at: {test_feats_path}")
+
+    X_test_df = pd.read_csv(test_feats_path).fillna(0)
+    if X_test_df.shape[1] != n_features:
+        raise ValueError("Column mismatch between train and test matrices")
+
+    y_test_log_pred = final_pls.predict(X_test_df).ravel()
+    y_test_pred     = np.expm1(y_test_log_pred)  # back‑transform to dollars
+    print("[INFO] Test predictions complete (exponentiated from log‑space).\n")
+
+    # 5) ─── Assemble submission CSV ────────────────────────────────────────────
+    id_test_path = os.path.join("data", "processed", "PLS_test_id.csv")
+    if not os.path.isfile(id_test_path):
+        raise FileNotFoundError(f"Could not find test IDs at: {id_test_path}")
+
+    test_ids = pd.read_csv(id_test_path)["Id"].values
+    if len(test_ids) != len(y_test_pred):
+        raise ValueError("Row mismatch between test IDs and feature matrix")
+
+    submission = pd.DataFrame({"Id": test_ids, "SalePrice": y_test_pred})
+    out_dir = os.path.join("data", "submission")
+    make_dirs_if_needed(out_dir)
+    sub_path = os.path.join(out_dir, "pls_submission_final.csv")
+    submission.to_csv(sub_path, index=False)
+    print(f"[SUCCESS] Submission written to: {sub_path}\n")
+
+    # ── 6) DIAGNOSTIC PLOTS ─────────────────────────────────────────
+    figs_dir = os.path.join("data", "figs")
     make_dirs_if_needed(figs_dir)
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 4) DIAGNOSTIC PLOTS FOCUSED ON PLS
-    # ─────────────────────────────────────────────────────────────────────────────
+# (a) CV curve 
+    ORANGE = "#E69F00"         
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
 
-    # 4a) CV Curve: RMSE_log vs. Number of Components
-    n_comps = cv_results['param_pls__n_components'].data.astype(int)  # type: ignore
-    mean_mse = -cv_results['mean_test_score']            # mean MSE (log-space)
-    se_mse = cv_results['std_test_score'] / np.sqrt(kf.get_n_splits())
-    rmse_vals = np.sqrt(mean_mse)                        # CV RMSE (log-space)
-    se_rmse = se_mse / (2 * np.sqrt(mean_mse))           # approximate se via delta
+    max_k  = 99              
+    rmse   = [-cross_val_score(PLSRegression(n_components=k, scale=True),X_train_df, y_train_log, cv=cv,scoring="neg_root_mean_squared_error").mean()
+    for k in range(1, max_k + 1)
+    ]
 
-    plt.figure(figsize=(7, 4))
-    plt.errorbar(
-        n_comps,
-        rmse_vals,
-        yerr=se_rmse,
-        fmt='o-',
-        capsize=3,
-        label='CV $\\mathrm{RMSE}_{\\log}$'
-    )
-    plt.axvline(best_n_comp, color='red', linestyle='--', label=f'Best m = {best_n_comp}')
-    plt.xlabel("Number of PLS Components", fontsize=12)
-    plt.ylabel("CV $\\mathrm{RMSE}_{\\log}$ ↓", fontsize=12)
-    plt.title("PLS CV Curve", fontsize=14)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(figs_dir, 'pls_cv_curve.png'), dpi=150)
-    plt.close()
-    print(f"[PLOT] Saved PLS CV curve to data/figs/pls_cv_curve.png")
+    best_k   = int(np.argmin(rmse) + 1)
+    best_err = rmse[best_k - 1]
 
-    # 4b) Coefficient Path: how each feature’s coefficient changes as m = 1..best_n_comp
-    X_std = X_train  # already standardized per assumption
-    coef_mat = compute_coef_path(X_std, y_train_log, best_n_comp)
+    plt.figure(figsize=(8,4))
+    plt.plot(range(1, max_k+1), rmse, color=ORANGE, lw=2, label="CV RMSE")
+    plt.axvline(best_k, linestyle="--", color="red", lw=2, label=f"Selected k = {best_k}")
+    plt.scatter([best_k], [best_err], color="red", zorder=3, marker="x", s=60)
 
-    plt.figure(figsize=(7, 4))
-    for j in range(coef_mat.shape[1]):
-        plt.plot(
-            np.arange(1, best_n_comp + 1),
-            coef_mat[:, j],
-            color='lightgray',
-            linewidth=0.7
-        )
-    plt.xlabel("Number of PLS Components", fontsize=12)
-    plt.ylabel("Standardized Coefficient", fontsize=12)
-    plt.title("PLS Coefficient Path", fontsize=14)
-    plt.tight_layout()
-    plt.savefig(os.path.join(figs_dir, 'pls_coef_path.png'), dpi=150)
-    plt.close()
-    print(f"[PLOT] Saved PLS coefficient path to data/figs/pls_coef_path.png")
+    plt.xlabel("# PLS Components"); plt.ylabel("CV RMSE (log SalePrice)")
+    plt.title("PLS – CV RMSE vs Number of Components")
+    plt.ylim(best_err*0.97, best_err*1.20)      # zoom  ±20 %
+    plt.grid(axis="y", ls=":", alpha=0.4)
+    plt.legend(); plt.tight_layout()
+    plt.show()
 
-    # 4c) Response Variance Explained by Each Component
-    per_comp_frac, cum_explained = compute_response_variance(X_std, y_train_log, best_n_comp)
+    # (b) Coefficient path with top‑5 highlighted  
+    coef_mat   = compute_coef_path(X_train_df, y_train_log, best_k) # type: ignore
+    abs_final  = np.abs(coef_mat[best_k-1])
+    top_idx    = abs_final.argsort()[-5:][::-1]
+    feature_names = X_train_df.columns.tolist()
 
     plt.figure(figsize=(6, 4))
-    plt.bar(
-        np.arange(1, best_n_comp + 1),
-        per_comp_frac,
-        alpha=0.5,
-        label='Per-Component'
-    )
-    plt.plot(
-        np.arange(1, best_n_comp + 1),
-        cum_explained,
-        '-o',
-        color='green',
-        label='Cumulative'
-    )
-    plt.axvline(best_n_comp, color='red', linestyle='--', label=f'Best m = {best_n_comp}')
-    plt.xlabel("# PLS Components", fontsize=12)
-    plt.ylabel("Fraction of $\\mathrm{Var}(\\log Y)$", fontsize=12)
-    plt.title("PLS Response Variance Explained", fontsize=14)
-    plt.ylim(0, 1.05)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(figs_dir, 'pls_response_variance.png'), dpi=150)
+    for j in range(coef_mat.shape[1]):
+        color = ORANGE if j in top_idx else "lightgray"
+        lw    = 2.2 if j in top_idx else 0.6
+        alpha = 1.0 if j in top_idx else 0.7
+        plt.plot(range(1, best_k + 1), coef_mat[:, j], color=color, lw=lw, alpha=alpha)
+    # annotate names at path end for top 5
+    for j in top_idx:
+        plt.text(best_k + 0.5, coef_mat[-1, j], feature_names[j], fontsize=8, va="center")
+
+    plt.xlabel("# Components"); plt.ylabel("Standardised Coefficient")
+    plt.title("PLS Coefficient Path – Top 5 Features (Orange)"); plt.tight_layout()
+    plt.savefig(os.path.join(figs_dir, "pls_coef_path_2.png"), dpi=150)
     plt.close()
-    print(f"[PLOT] Saved PLS response variance explained to data/figs/pls_response_variance.png")
 
-    # 4d) Bias–Variance–MSE Breakdown on Full Train (log-space)
-    final_pls = PLSRegression(n_components=best_n_comp, scale=False)
-    final_pls.fit(X_std, y_train_log)
-    y_hat_log = final_pls.predict(X_std).ravel()
+    # (c) QQ‑plot of out‑of‑fold residuals with top‑5 highlighted
+    coef_mat   = compute_coef_path(X_train_df, y_train_log, best_k) # type: ignore
+    abs_final  = np.abs(coef_mat[best_k-1])
+    top_idx    = abs_final.argsort()[-5:][::-1]
+    feature_names = X_train_df.columns.tolist()
 
-    mse_log = mean_squared_error(y_train_log, y_hat_log)
-    var_log = np.var(y_hat_log)
-    bias2_log = (np.mean(y_hat_log) - np.mean(y_train_log)) ** 2
+    plt.figure(figsize=(6, 4))
+    for j in range(coef_mat.shape[1]):
+        color = "tab:orange" if j in top_idx else "lightgray"
+        lw    = 2.0 if j in top_idx else 0.6
+        plt.plot(range(1, best_k + 1), coef_mat[:, j], color=color, lw=lw)
+    # annotate names at path end
+    for j in top_idx:
+        plt.text(best_k + 0.3, coef_mat[-1, j], feature_names[j], fontsize=9, va="center")
 
-    plt.figure(figsize=(5, 4))
-    plt.bar(
-        ["Squared Bias", "Variance", "Train MSE"],
-        [bias2_log, var_log, mse_log], # type: ignore
-        color=['black', 'green', 'purple']
-    )
-    plt.title(f"PLS (m={best_n_comp})\nBias² / Variance / Train MSE (log)", fontsize=12)
-    plt.tight_layout()
-    plt.savefig(os.path.join(figs_dir, 'pls_bias_variance_mse.png'), dpi=150)
+    plt.xlabel("# Components"); plt.ylabel("Standardised Coefficient")
+    plt.title("PLS Coefficient Path – Top 5 Features Highlighted"); plt.tight_layout()
+    plt.savefig(os.path.join(figs_dir, "pls_coef_path.png"), dpi=150)
     plt.close()
-    print(f"[PLOT] Saved PLS bias-variance-MSE breakdown to data/figs/pls_bias_variance_mse.png")
 
-    # 4e) First Two PLS Scores vs. log(SalePrice) (if best_n_comp ≥ 2)
-    if best_n_comp >= 2:
-        T_full = final_pls.x_scores_
-        plt.figure(figsize=(5, 5))
-        sc = plt.scatter(
-            T_full[:, 0],
-            T_full[:, 1],
-            c=y_train_log,
-            cmap='viridis',
-            s=20
-        )
-        plt.colorbar(sc, label="log(SalePrice)")
-        plt.xlabel("PLS Score 1", fontsize=12)
-        plt.ylabel("PLS Score 2", fontsize=12)
-        plt.title("First Two PLS Scores vs log(SalePrice)", fontsize=14)
-        plt.tight_layout()
-        plt.savefig(os.path.join(figs_dir, 'pls_score1_vs_score2.png'), dpi=150)
-        plt.close()
-        print(f"[PLOT] Saved PLS score scatter to data/figs/pls_score1_vs_score2.png")
-    else:
-        print("[SKIP] best_n_comp < 2; skipping PLS score scatter plot")
+    # (c) QQ‑plot of out‑of‑fold residuals
+    from sklearn.model_selection import cross_val_predict
+    from scipy import stats
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 5) Final PLS model is already fitted (final_pls)
-    print(f"[INFO] Final PLS model with m={best_n_comp} fitted on full train set.\n")
+    oof_pred = cross_val_predict(PLSRegression(n_components=best_k, scale=True),
+                                 X_train_df, y_train_log, cv=cv)
+    residuals = y_train_log - oof_pred
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 6) LOAD TEST FEATURES AND PREDICT
-    # ─────────────────────────────────────────────────────────────────────────────
-    test_feats_path = os.path.join('data', 'processed', 'clean_test.csv')
-    if not os.path.isfile(test_feats_path):
-        raise FileNotFoundError(f"Could not find test-features file at: {test_feats_path}")
+    plt.figure(figsize=(4.5, 4.5))
+    stats.probplot(residuals, dist="norm", plot=plt)
+    plt.title("QQ plot of PLS OOF residuals"); plt.tight_layout()
+    plt.savefig(os.path.join(figs_dir, "pls_residuals_qq.png"), dpi=150)
+    plt.close()
 
-    df_test_feats = pd.read_csv(test_feats_path)
-    df_test_feats = df_test_feats.fillna(0)  # Fill any NaNs with 0 (assumed no missing values)
-    # Drop the “Id” column for features matching
-    X_test = df_test_feats.drop(columns=['Id']).values
-    n_test_samples, n_test_features = X_test.shape
-    if n_test_features != n_features:
-        raise ValueError(
-            "❌ Column mismatch between clean_train_v2 and clean_test_v2:\n"
-            f"  train features: {n_features}\n"
-            f"  test features : {n_test_features}"
-        )
-    print(f"[INFO] Loaded test features: {n_test_samples} rows, {n_test_features} features.\n")
-
-    y_test_log_pred = final_pls.predict(X_test).ravel()
-    y_test_pred = np.exp(y_test_log_pred)
-    print("[INFO] Completed predictions on test set (exponentiated from log-space).\n")
-
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 7) LOAD TEST IDS AND SAVE SUBMISSION
-    # ─────────────────────────────────────────────────────────────────────────────
-    id_test_path = os.path.join('data', 'processed', 'id_test.csv')
-    if not os.path.isfile(id_test_path):
-        raise FileNotFoundError(f"Could not find id_test.csv at: {id_test_path}")
-
-    df_id_test = pd.read_csv(id_test_path)
-    if 'Id' not in df_id_test.columns or df_id_test.shape[1] != 1:
-        raise ValueError(
-            "❌ id_test.csv should contain exactly one column named 'Id'.\n"
-            f"   Found columns: {df_id_test.columns.tolist()}"
-        )
-
-    test_ids = df_id_test['Id'].values
-    if len(test_ids) != n_test_samples:
-        raise ValueError(
-            "❌ Number of rows in id_test.csv does not match number of rows in clean_test_v2.csv.\n"
-            f"   len(test_ids) = {len(test_ids)},  clean_test_v2 rows = {n_test_samples}"
-        )
-
-    submission = pd.DataFrame({
-        'Id':        test_ids,
-        'SalePrice': y_test_pred
-    })
-
-    output_dir = os.path.join('data', 'submission')
-    make_dirs_if_needed(output_dir)
-    submission_path = os.path.join(output_dir, 'pls_submission_final.csv')
-    submission.to_csv(submission_path, index=False)
-    print(f"[SUCCESS] Wrote submission to: {submission_path}\n")
+   # print(f"[INFO] Diagnostic plots saved to {figs_dir}
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

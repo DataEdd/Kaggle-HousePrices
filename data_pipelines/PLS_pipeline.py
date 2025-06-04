@@ -245,8 +245,8 @@ df_clean_test = pd.DataFrame(
     index=X_test.index
 )
 
-df_clean_train.to_csv("data/processed/PLS_clean_train_final.csv", index=False)
-df_clean_test.to_csv("data/processed/PLS_clean_test_final.csv",  index=False)
+df_clean_train.to_csv("data/processed/PLS_clean_train.csv", index=False)
+df_clean_test.to_csv("data/processed/PLS_clean_test.csv",  index=False)
 test_ids.to_csv("data/processed/PLS_test_id.csv", index=False)
 
 print(

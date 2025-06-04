@@ -16,20 +16,20 @@ def main():
     # ──────────────────────────────────────────────────────────────────────────
     # 1) Load cleaned training data
     # ──────────────────────────────────────────────────────────────────────────
-    train_path = os.path.join("data", "processed", "clean_train.csv")
+    train_path = os.path.join("data", "processed", "PCR_clean_train_pcr.csv")
     if not os.path.isfile(train_path):
         raise FileNotFoundError(f"Could not find cleaned train file at: {train_path}")
     df_train = pd.read_csv(train_path)
-    df_train = df_train.fillna(0)
+    #df_train = df_train.fillna(0)
     if "SalePrice" not in df_train.columns:
         raise KeyError(f"'SalePrice' column not found in {train_path}")
 
     # Separate features (X_train) and log‐target (y_train_log)
-    ids_train = df_train["Id"].values
+    #ids_train = df_train["Id"].values
     y_train = df_train["SalePrice"].values
     y_train_log = np.log(y_train) # type: ignore
 
-    X_train = df_train.drop(columns=["Id", "SalePrice"])
+    X_train = df_train.drop(columns=["SalePrice"])
     n_samples, n_features = X_train.shape
     print(f"[INFO] Loaded training: {n_samples} rows × {n_features} features (no Id/SalePrice).")
     print(f"[INFO] Using log‐SalePrice as target (shape: {y_train_log.shape}).\n")
@@ -62,7 +62,6 @@ def main():
     )
     gcv.fit(X_train.values, y_train_log)
     print("[INFO] GridSearchCV complete.\n")
-
     best_n_comp = gcv.best_params_["pca__n_components"]
     best_rmse_log = -gcv.best_score_
     print(f"[RESULT] Best #Components: {best_n_comp}")
@@ -81,16 +80,16 @@ def main():
     # ──────────────────────────────────────────────────────────────────────────
     # 4) Load cleaned test data & predict
     # ──────────────────────────────────────────────────────────────────────────
-    test_path = os.path.join("data", "processed", "clean_test.csv")
+    test_path = os.path.join("data", "processed", "PCR_clean_test_pcr.csv")
     if not os.path.isfile(test_path):
         raise FileNotFoundError(f"Could not find cleaned test file at: {test_path}")
     df_test = pd.read_csv(test_path)
     df_test = df_test.fillna(0)
-    if "Id" not in df_test.columns:
-        raise KeyError(f"'Id' column not found in {test_path}")
+    #if "Id" not in df_test.columns:
+    #    raise KeyError(f"'Id' column not found in {test_path}")
 
-    test_ids = df_test["Id"].values
-    X_test = df_test.drop(columns=["Id"])
+    test_ids = pd.read_csv('data/processed/PCR_test_id.csv')["Id"].values
+    X_test = df_test.copy()
     if X_test.shape[1] != n_features:
         raise ValueError(
             f"Column mismatch: train had {n_features} features, test has {X_test.shape[1]}."
