@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, make_scorer
 from sklearn.model_selection import cross_val_predict
 from scipy import stats
+import seaborn as sns
 
 #def neg_rmse(y_true, y_pred):
 #    """Negative RMSE for log‐target (so that higher is better)."""
@@ -134,6 +135,11 @@ def main() -> None:
     make_dirs_if_needed(figs_dir)
 
 # (a) CV curve 
+    sns.set_style('whitegrid') 
+    palette = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    main_color = palette[1]       # tab:orange
+    highlight_color = palette[3]  # tab:red
+    scatter_color = palette[4]    # tab:purple
     ORANGE = "#E69F00"         
     cv = KFold(n_splits=5, shuffle=True, random_state=42)
 
@@ -155,7 +161,8 @@ def main() -> None:
     plt.ylim(best_err*0.97, best_err*1.20)      # zoom  ±20 %
     plt.grid(axis="y", ls=":", alpha=0.4)
     plt.legend(); plt.tight_layout()
-    plt.show()
+    #plt.show()
+    plt.close()
 
     # (b) Coefficient path with top‑5 highlighted  
     coef_mat   = compute_coef_path(X_train_df, y_train_log, best_k) # type: ignore
@@ -206,12 +213,27 @@ def main() -> None:
                                  X_train_df, y_train_log, cv=cv)
     residuals = y_train_log - oof_pred
 
-    plt.figure(figsize=(4.5, 4.5))
+    plt.figure()
     stats.probplot(residuals, dist="norm", plot=plt)
-    plt.title("QQ plot of PLS OOF residuals"); plt.tight_layout()
-    plt.savefig(os.path.join(figs_dir, "pls_residuals_qq.png"), dpi=150)
+    plt.title("QQ plot of residuals")
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(os.path.join(figs_dir, "pls_residuals_qq.png"), bbox_inches='tight')
     plt.close()
 
+    # (d) Out-of-Fold predictions vs Actual
+    plt.figure(figsize=(6, 4))
+    plt.scatter(y_train_log, oof_pred, alpha=0.6, label="OOF predictions", color=main_color, marker='x') 
+    min_val, max_val = y_train_log.min(), y_train_log.max()
+    plt.plot([min_val, max_val], [min_val, max_val], linestyle='--', color='red', label="Ideal")
+    plt.xlabel('Actual log SalePrice')
+    plt.ylabel('Predicted log SalePrice')
+    plt.title(f'PLS Predicted vs Actual (OOF, {best_k} components)')
+    plt.grid(True)
+    #plt.legend()
+    plt.tight_layout()
+    plt.savefig('data/figs/PLS_pred_vs_actual.png', bbox_inches='tight')
+    plt.close()
    # print(f"[INFO] Diagnostic plots saved to {figs_dir}
 
 
