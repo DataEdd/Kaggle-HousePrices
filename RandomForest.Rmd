@@ -1,0 +1,105 @@
+---
+title: "KaggleSub"
+output: html_document
+date: "2025-06-03"
+---
+
+```{r}
+library(readr)
+library(dplyr)
+library(randomForest)
+library(caret)
+library(igraph)
+library(ggraph)
+library(tibble)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+
+df <- read_csv("~/data/processed/clean_train.csv")
+clean_test <- read_csv("~/data/processed/clean_test.csv")
+
+colnames(df) <- make.names(colnames(df))
+colnames(clean_test) <- make.names(colnames(clean_test))
+
+df <- df %>%
+  mutate(
+    GrLivArea.OverallQual = GrLivArea * OverallQual,
+    GarageCars.TotalBsmtSF = GarageCars * TotalBsmtSF,
+    YearBuilt.OverallCond = YearBuilt * OverallCond
+  )
+
+clean_test <- clean_test %>%
+  mutate(
+    GrLivArea.OverallQual = GrLivArea * OverallQual,
+    GarageCars.TotalBsmtSF = GarageCars * TotalBsmtSF,
+    YearBuilt.OverallCond = YearBuilt * OverallCond
+  )
+
+set.seed(123)
+rf_model <- randomForest(log(SalePrice) ~ ., data = df, ntree = 1250, mtry = 42, importance = TRUE, maxnodes = 12, keep.inbag = TRUE)
+
+log_preds <- predict(rf_model, newdata = clean_test)
+preds <- exp(log_preds)
+
+submission <- data.frame(Id = clean_test$Id, SalePrice = preds)
+write_csv(submission, "submission_interactions_rf.csv")
+cat("Submission saved: submission_interactions_rf.csv\n")
+
+log_actuals <- log(df$SalePrice)
+log_fitted <- predict(rf_model, newdata = df)
+train_rmse_log <- sqrt(mean((log_fitted - log_actuals)^2))
+cat("Train RMSE (log scale):", round(train_rmse_log, 6), "\n")
+
+folds <- createFolds(df$SalePrice, k = 5)
+mtry_grid <- c(42)
+cv_results <- data.frame(mtry = mtry_grid, RMSE = NA_real_)
+for (i in seq_along(mtry_grid)) {
+  m <- mtry_grid[i]
+  rmse_vec <- sapply(folds, function(idx) {
+    train_data <- df[-idx, ]
+    val_data <- df[idx, ]
+    colnames(train_data) <- make.names(colnames(train_data))
+    colnames(val_data) <- make.names(colnames(val_data))
+    rf_model <- randomForest(log(SalePrice) ~ ., data = train_data, ntree = 1250, mtry = m)
+    preds <- predict(rf_model, newdata = val_data)
+    sqrt(mean((preds - log(val_data$SalePrice))^2))
+  })
+  cv_results$RMSE[i] <- mean(rmse_vec)
+}
+print(cv_results)
+
+tree_func <- function(final_model, tree_num = 1) {
+  tree <- randomForest::getTree(final_model, k = tree_num, labelVar = TRUE) %>%
+    tibble::rownames_to_column() %>%
+    mutate(`split point` = ifelse(is.na(prediction), `split point`, NA))
+  graph_frame <- data.frame(from = rep(tree$rowname, 2), to = c(tree$`left daughter`, tree$`right daughter`))
+  graph <- graph_from_data_frame(graph_frame) %>% delete_vertices("0")
+  V(graph)$node_label <- gsub("_", " ", as.character(tree$`split var`))
+  V(graph)$leaf_label <- as.character(tree$prediction)
+  V(graph)$split <- as.character(round(tree$`split point`, 2))
+  ggraph(graph, layout = 'dendrogram') + 
+    theme_bw() +
+    geom_edge_link() +
+    geom_node_point() +
+    geom_node_text(aes(label = node_label), na.rm = TRUE, repel = TRUE) +
+    geom_node_label(aes(label = split), vjust = 2.5, na.rm = TRUE, fill = "white") +
+    geom_node_label(aes(label = leaf_label, fill = leaf_label), na.rm = TRUE, repel = TRUE, colour = "white", fontface = "bold", show.legend = FALSE) +
+    theme_void()
+}
+
+tree_plot <- tree_func(rf_model, 1)
+print(tree_plot)
+
+cart_model <- rpart(log(SalePrice) ~ ., data = df, control = rpart.control(maxdepth = 5, cp = 0.01))
+rpart.plot(cart_model, type = 4, extra = 101, box.palette = "GnBu", branch.lty = 1, shadow.col = "gray", main = "Decision Tree on Log(SalePrice)")
+
+importance_df <- importance(rf_model)
+importance_df <- data.frame(Feature = rownames(importance_df), Importance = importance_df[, "IncNodePurity"])
+top_feats <- importance_df %>% arrange(desc(Importance)) %>% head(20)
+ggplot(top_feats, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top Features in Random Forest Model", x = "Feature", y = "Increase in Node Purity") +
+  theme_minimal()
+```
