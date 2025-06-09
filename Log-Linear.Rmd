@@ -1,0 +1,123 @@
+---
+title: "clean141C"
+output: html_document
+date: "2025-06-02"
+---
+
+```{r}
+library(readr)
+library(dplyr)
+library(e1071)
+library(caret)
+library(broom)
+library(ggplot2)
+
+df <- read_csv("~/data/processed/clean_train.csv")
+clean_test <- read_csv("~/data/processed/clean_test.csv")
+colnames(df) <- make.names(colnames(df))
+colnames(clean_test) <- make.names(colnames(clean_test))
+
+log_model <- lm(log(SalePrice) ~ ., data = df)
+log_preds <- predict(log_model, newdata = clean_test)
+preds <- exp(log_preds)
+submission <- data.frame(Id = clean_test$Id, SalePrice = preds)
+write_csv(submission, "submission_log_linear.csv")
+train_log_preds <- predict(log_model, newdata = df)
+train_log_rmse <- sqrt(mean((log(df$SalePrice) - train_log_preds)^2))
+cat("Log-Scale RMSE (Train):", round(train_log_rmse, 5), "\n")
+
+set.seed(123)
+folds <- createFolds(df$SalePrice, k = 5, list = TRUE, returnTrain = FALSE)
+
+cv_rmse <- function(model_formula, data) {
+  rmses <- sapply(folds, function(idx) {
+    train_data <- data[-idx, ]
+    test_data <- data[idx, ]
+    model <- lm(model_formula, data = train_data)
+    preds <- predict(model, newdata = test_data)
+    sqrt(mean((log(test_data$SalePrice) - preds)^2))
+  })
+  mean(rmses)
+}
+
+baseline_rmse <- cv_rmse(log(SalePrice) ~ ., df)
+drop_sparse_df <- df %>% select(where(~ mean(is.na(.)) <= 0.5), SalePrice)
+drop_sparse_rmse <- cv_rmse(log(SalePrice) ~ ., drop_sparse_df)
+subset_vars <- names(df)[names(df) != "SalePrice"][1:17]
+best_subset_df <- df %>% select(all_of(subset_vars), SalePrice)
+best_subset_rmse <- cv_rmse(log(SalePrice) ~ ., best_subset_df)
+low_var_df <- df %>% select(where(~ var(.x, na.rm = TRUE) > 1e-5), SalePrice)
+low_var_rmse <- cv_rmse(log(SalePrice) ~ ., low_var_df)
+
+winsor_df <- df
+num_cols <- names(winsor_df)[sapply(winsor_df, is.numeric) & names(winsor_df) != "SalePrice"]
+for (col in num_cols) {
+  p_low <- quantile(winsor_df[[col]], 0.005, na.rm = TRUE)
+  p_high <- quantile(winsor_df[[col]], 0.995, na.rm = TRUE)
+  winsor_df[[col]] <- pmin(pmax(winsor_df[[col]], p_low), p_high)
+}
+winsor_rmse <- cv_rmse(log(SalePrice) ~ ., winsor_df)
+
+log_skew_df <- df
+X <- df %>% select(-SalePrice)
+skewed_feats <- names(X)[sapply(X, function(x) abs(skewness(x, na.rm = TRUE)) > 1)]
+for (col in skewed_feats) {
+  log_skew_df[[col]] <- log(1 + pmax(log_skew_df[[col]], 0))
+}
+log_skew_rmse <- cv_rmse(log(SalePrice) ~ ., log_skew_df)
+
+results <- data.frame(
+  Method = c("Baseline", "Drop Sparse", "Best Subset", "Drop Low Variance", "Winsorizing", "Log-Transform if Skew"),
+  CV_RMSE = c(baseline_rmse, drop_sparse_rmse, best_subset_rmse, low_var_rmse, winsor_rmse, log_skew_rmse)
+)
+results$Delta_RMSE <- results$CV_RMSE - baseline_rmse
+print(results)
+
+rare_df <- df
+is_binary <- function(x) all(x %in% c(0, 1), na.rm = TRUE)
+binary_cols <- names(rare_df)[sapply(rare_df, is_binary) & names(rare_df) != "SalePrice"]
+keep_dummies <- binary_cols[unlist(sapply(rare_df[binary_cols], function(col) sum(col, na.rm = TRUE) >= 30))]
+other_cols <- setdiff(names(rare_df), c(binary_cols, "SalePrice"))
+rare_df_final <- rare_df %>% select(all_of(other_cols), all_of(keep_dummies), SalePrice)
+rare_rmse <- cv_rmse(log(SalePrice) ~ ., data = rare_df_final)
+results <- rbind(results, data.frame(Method = "Rare Group Flag", CV_RMSE = rare_rmse, Delta_RMSE = rare_rmse - baseline_rmse))
+print(results)
+
+lm_model <- lm(log(SalePrice) ~ ., data = df)
+coefs <- tidy(lm_model) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(abs_estimate = abs(estimate)) %>%
+  arrange(desc(abs_estimate)) %>%
+  head(20)
+ggplot(coefs, aes(x = reorder(term, estimate), y = estimate)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top Coefficients in Log-Linear Model", x = "Feature", y = "Estimated Coefficient") +
+  theme_minimal()
+
+model <- lm(log(SalePrice) ~ ., data = df)
+resid_df <- data.frame(resid = residuals(model))
+ggplot(resid_df, aes(sample = resid)) +
+  stat_qq(color = "blue", size = 2) +
+  stat_qq_line(color = "red", linewidth = 1) +
+  labs(title = "QQ Plot of Residuals", x = "Theoretical Quantiles", y = "Ordered Values") +
+  theme_minimal()
+
+actuals <- log(df$SalePrice)
+preds <- predict(model)
+ggplot(data.frame(actuals, preds), aes(x = actuals, y = preds)) +
+  geom_point(color = "orange", alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linewidth = 1) +
+  labs(title = "Out of Fold Predictions vs Actual", x = "Actual log(SalePrice)", y = "Predicted log(SalePrice)") +
+  theme_minimal()
+
+baseline_model <- lm(log(SalePrice) ~ ., data = df)
+coeff_df <- as.data.frame(summary(baseline_model)$coefficients)
+coeff_df$Feature <- rownames(coeff_df)
+top_significant <- coeff_df %>%
+  filter(`Pr(>|t|)` < 0.05) %>%
+  arrange(`Pr(>|t|)`) %>%
+  slice(1:10) %>%
+  select(Feature, Estimate, `Pr(>|t|)`)
+print(top_significant)
+```
