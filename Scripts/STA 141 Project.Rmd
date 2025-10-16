@@ -1,0 +1,195 @@
+---
+title: "STA 141c Project"
+author: "Yikai Lu"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# lasso and ridge regression
+```{r}
+library(tidyverse)
+library(glmnet)
+train <- read_csv("D:/Yikai university work/spring quarter 2025/STA 141c/interaction_features_lasso_ridge.csv")
+y <- train$SalePrice
+X <- train %>% select(-Id, -SalePrice)
+cat("Summarizing missing values...\n")
+missing_counts <- colSums(is.na(X))
+missing_pct <- (missing_counts / nrow(X)) * 100
+missing_df <- data.frame(
+  Variable = names(missing_counts),
+  MissingCount = missing_counts,
+  MissingPct = round(missing_pct, 2)
+)
+missing_df <- missing_df[missing_df$MissingCount > 0, ]
+missing_df <- missing_df[order(-missing_df$MissingPct), ]
+print(missing_df)
+# Optional: Drop columns with >90% missing (customizable)
+drop_cols <- missing_df %>% filter(MissingPct > 90) %>% pull(Variable)
+if (length(drop_cols) > 0) {
+  cat("🗑️ Dropping high-missing columns:\n")
+  print(drop_cols)
+  X <- X %>% select(-all_of(drop_cols))
+}
+# Numeric → median imputation
+num_vars <- sapply(X, is.numeric)
+X[num_vars] <- lapply(X[num_vars], function(col) {
+  col[is.na(col)] <- median(col, na.rm = TRUE)
+  col
+})
+# Categorical → mode imputation
+cat_vars <- sapply(X, is.character)
+X[cat_vars] <- lapply(X[cat_vars], function(col) {
+  mode_val <- names(sort(table(col), decreasing = TRUE))[1]
+  col[is.na(col)] <- mode_val
+  col
+})
+X <- X[, sapply(X, function(col) length(unique(col)) > 1)]
+X <- as.data.frame(X)
+names(X) <- make.names(names(X), unique = TRUE)
+if (length(names(X)) == 0) {
+  stop("No valid predictors left after filtering.")
+}
+
+X_formula <- as.formula(paste("~", paste(names(X), collapse = "+")))
+X_model <- model.matrix(X_formula, data = X)[, -1]
+cat("Final model matrix created with", nrow(X_model), "rows and", ncol(X_model), "columns.\n")
+
+```
+
+
+```{r}
+# Fit Lasso regression
+set.seed(123)
+lasso_cv <- cv.glmnet(X_model, y, alpha = 1)  # Lasso uses alpha = 1
+# Best lambda
+best_lambda_lasso <- lasso_cv$lambda.min
+# Predict and calculate RMSE
+lasso_preds <- predict(lasso_cv, s = best_lambda_lasso, newx = X_model)
+lasso_rmse <- sqrt(mean((lasso_preds - y)^2))
+
+cat("lasso Results:\n")
+cat("Best lambda:", best_lambda_lasso, "\n")
+cat("Lasso RMSE:", lasso_rmse, "\n")
+plot(lasso_cv)
+
+```
+```{r}
+# Fit Ridge regression-
+set.seed(123)
+ridge_cv <- cv.glmnet(X_model, y, alpha = 0)  # Ridge uses alpha = 0
+# Best lambda
+best_lambda_ridge <- ridge_cv$lambda.min
+# Predict and calculate RMSE
+ridge_preds <- predict(ridge_cv, s = best_lambda_ridge, newx = X_model)
+ridge_rmse <- sqrt(mean((ridge_preds - y)^2))
+cat("Ridge Results:\n")
+cat("Best lambda:", best_lambda_ridge, "\n")
+cat("Ridge RMSE:", ridge_rmse, "\n")
+plot(ridge_cv)
+
+```
+
+
+```{r}
+#try to compare these two model
+cat("lasso RMSE:", lasso_rmse, "\n")
+cat("Ridge RMSE:", ridge_rmse, "\n")
+```
+
+```{r}
+# RSS on training data
+lasso_rss <- sum((lasso_preds - y)^2)
+ridge_rss <- sum((ridge_preds - y)^2)
+cat("Lasso Training RSS:", lasso_rss, "\n")
+cat("Ridge Training RSS:", ridge_rss, "\n")
+
+```
+
+```{r}
+lasso_coef_full <- coef(lasso_cv, s = "lambda.min")
+lasso_coef_df <- as.data.frame(as.matrix(lasso_coef_full))
+colnames(lasso_coef_df) <- "Coefficient"
+lasso_coef_df$Feature <- rownames(lasso_coef_df)
+
+# Filter out and select top 15 absolute coefficients
+top15_lasso <- lasso_coef_df %>%
+  filter(Feature != "(Intercept)") %>%
+  mutate(abs_coef = abs(Coefficient)) %>%
+  arrange(desc(abs_coef)) %>%
+  slice(1:15)
+
+cat(" Top 15 Lasso Features:\n")
+print(top15_lasso)
+```
+
+```{r}
+# Use only top 15 features to refit the model and predict
+top15_features <- top15_lasso$Feature
+X_top15 <- X_model[, top15_features]
+
+lasso_top15_model <- glmnet(X_top15, y, alpha = 1, lambda = best_lambda_lasso)
+pred_top15 <- predict(lasso_top15_model, newx = X_top15)
+rmse_top15 <- sqrt(mean((pred_top15 - y)^2))
+
+cat("\n  RMSE using Top 15 Lasso Features:", rmse_top15, "\n")
+
+```
+
+
+
+```{r}
+set.seed(123)
+top15_features <- top15_lasso$Feature
+X_top15 <- X_model[, top15_features]
+library(caret)
+trainIndex <- createDataPartition(y, p = 0.8, list = FALSE)
+X_train <- X_top15[trainIndex, ]
+X_test <- X_top15[-trainIndex, ]
+y_train <- y[trainIndex]
+y_test <- y[-trainIndex]
+
+### 1. Lasso Regression 
+lasso_top15_cv <- cv.glmnet(X_train, y_train, alpha = 1)
+best_lambda_lasso_top15 <- lasso_top15_cv$lambda.min
+
+lasso_preds_top15 <- predict(lasso_top15_cv, s = best_lambda_lasso_top15, newx = X_test)
+lasso_rmse_top15 <- sqrt(mean((lasso_preds_top15 - y_test)^2))
+
+cat("Lasso (Top 15 Features) RMSE:", lasso_rmse_top15, "\n")
+cat("Best lambda (Lasso Top 15):", best_lambda_lasso_top15, "\n")
+
+plot(lasso_top15_cv, main = "Lasso CV - Top 15 Features")
+
+### 2. Ridge Regression
+ridge_top15_cv <- cv.glmnet(X_train, y_train, alpha = 0)
+best_lambda_ridge_top15 <- ridge_top15_cv$lambda.min
+
+ridge_preds_top15 <- predict(ridge_top15_cv, s = best_lambda_ridge_top15, newx = X_test)
+ridge_rmse_top15 <- sqrt(mean((ridge_preds_top15 - y_test)^2))
+
+cat("Ridge (Top 15 Features) RMSE:", ridge_rmse_top15, "\n")
+cat("Best lambda (Ridge Top 15):", best_lambda_ridge_top15, "\n")
+
+plot(ridge_top15_cv, main = "Ridge CV - Top 15 Features")
+
+cat("\nFinal Model Comparison (Top 15 features):\n")
+cat("Lasso RMSE:", lasso_rmse_top15, "\n")
+cat("Ridge RMSE:", ridge_rmse_top15, "\n")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
